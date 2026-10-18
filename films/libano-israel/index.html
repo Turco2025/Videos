@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Líbano × Israel em 1 minuto</title>
+<style>
+  @font-face { font-family: Display; font-weight: 900; src: url(/node_modules/@fontsource/archivo/files/archivo-latin-900-normal.woff2) format('woff2'); }
+  @font-face { font-family: Display; font-weight: 700; src: url(/node_modules/@fontsource/archivo/files/archivo-latin-700-normal.woff2) format('woff2'); }
+  @font-face { font-family: UI; font-weight: 500; src: url(/node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2) format('woff2'); }
+  @font-face { font-family: UI; font-weight: 700; src: url(/node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-700-normal.woff2) format('woff2'); }
+  html, body { margin: 0; background: #000; }
+  canvas { display: block; }
+  body.preview { display: grid; place-items: center; height: 100vh; gap: 8px; align-content: center; }
+  .scrub { width: 60vw; }
+</style>
+</head>
+<body>
+<script type="module">
+import { mount, loadFonts, range, ease, lerp, clamp } from '/lib/studio.js';
+
+// Sober palette: ink ground, bone type, one amber accent, one neutral grey for secondary text.
+const BG = '#101214', FG = '#ECE8DF', ACC = '#F2A541', DIM = '#8E8B84';
+const D = (w, px) => `${w} ${px}px Display`;
+const U = (w, px) => `${w} ${px}px UI`;
+const X = 70; // safe margin
+
+// Scene starts in beats (keep in sync with score.mjs CUTS).
+const S2 = 4, S3 = 12, S4 = 24, S5 = 36, S6 = 48, S7 = 60, S8 = 70, END = 80;
+
+const HISTORY = [
+  { y: 1978, at: 12, text: 'Israel invade o sul do Líbano após um ataque da OLP.' },
+  { y: 1982, at: 15, text: 'Invasão chega a Beirute. Nasce o Hezbollah, apoiado pelo Irã.' },
+  { y: 2000, at: 18, text: 'Israel se retira do sul do Líbano após 18 anos.' },
+  { y: 2006, at: 21, text: 'Guerra de 34 dias: mais de 1.100 mortos no Líbano, 165 em Israel.' },
+];
+const WAR24 = [
+  { d: '8 OUT 2023', at: 25, text: 'Hezbollah ataca Israel em apoio ao Hamas, um dia após o 7 de outubro.' },
+  { d: 'SET 2024', at: 28, text: 'Explosões de pagers. Israel mata o líder Hassan Nasrallah.' },
+  { d: 'OUT 2024', at: 31, text: 'Israel lança invasão terrestre no sul do Líbano.' },
+  { d: '27 NOV 2024', at: 34, text: 'Cessar-fogo mediado por EUA e França.' },
+];
+const COST = [
+  { n: 4047, fmt: (v) => v.toLocaleString('pt-BR'), label: 'mortos no Líbano', at: 36 },
+  { n: 1.2, fmt: (v) => v.toFixed(1).replace('.', ',') + ' mi', label: 'deslocados no Líbano', at: 39 },
+  { n: 129, fmt: (v) => String(Math.round(v)), label: 'mortos em Israel (82 militares, 47 civis)', at: 42 },
+  { n: 60, fmt: (v) => '~' + Math.round(v) + ' mil', label: 'deslocados no norte de Israel', at: 45 },
+];
+const WAR26 = [
+  { d: '2 MAR', at: 50, text: 'Hezbollah dispara contra Israel após ataques de EUA e Israel ao Irã.' },
+  { d: '16 MAR', at: 53, text: 'Israel inicia nova invasão terrestre no sul do Líbano.' },
+  { d: 'ABR', at: 56, text: 'Trégua mediada pelos EUA. Os bombardeios continuam.' },
+];
+const TALKS = [
+  { text: 'Desarmar o Hezbollah', at: 72 },
+  { text: 'Exército libanês no sul', at: 74 },
+  { text: 'Retirada das tropas israelenses', at: 76 },
+];
+
+mount({
+  width: 1080, height: 1920, fps: 30, duration: 60,
+
+  async setup() {
+    await loadFonts([D(900, 100), D(700, 100), U(500, 40), U(700, 40)]);
+  },
+
+  draw(env, t) {
+    const { ctx, beats, W, H } = env;
+    const b = (n) => beats.at(n);
+    const B = 60 / beats.tempo;
+    const pulse = beats.pulse(t, 0.25);
+    const R = W - X; // right edge of the safe area
+
+    // ---------- helpers ----------
+    const fitFont = (str, font, px, maxW) => {
+      ctx.font = font(px);
+      const w = ctx.measureText(str).width;
+      return w > maxW ? Math.floor(px * maxW / w) : px;
+    };
+    // Text rising out of a hard mask. Shrinks to fit the safe width.
+    const rise = (str, x, y, size, p, font = (s) => D(900, s), color = FG) => {
+      if (p <= 0) return;
+      const s = fitFont(str, font, size, R - x);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, y - s * 1.0, W, s * 1.25); ctx.clip();
+      ctx.font = font(s); ctx.fillStyle = color; ctx.textBaseline = 'alphabetic';
+      ctx.fillText(str, x, y + (1 - p) * s * 1.2);
+      ctx.restore();
+    };
+    const wrap = (str, font, maxW) => {
+      ctx.font = font;
+      const out = []; let line = '';
+      for (const w of str.split(' ')) {
+        const test = line ? line + ' ' + w : w;
+        if (ctx.measureText(test).width > maxW && line) { out.push(line); line = w; } else line = test;
+      }
+      if (line) out.push(line);
+      return out;
+    };
+    // A paragraph whose lines rise one after another.
+    const para = (str, x, y, size, t0, { w = 700, color = FG, lh = 1.22, stagger = 0.07, maxW = R - x } = {}) => {
+      const lines = wrap(str, D(w, size), maxW);
+      lines.forEach((ln, i) => rise(ln, x, y + i * size * lh, size, ease.outQuart(range(t, t0 + i * stagger, t0 + i * stagger + 0.45)), (s) => D(w, s), color));
+      return y + lines.length * size * lh;
+    };
+    const mono = (str, x, y, size, color = FG, w = 500) => { ctx.font = U(w, size); ctx.fillStyle = color; ctx.fillText(str, x, y); };
+    // Source notes: small mono, wrapped inside the safe area, bottom-anchored.
+    const note = (str, n) => {
+      if (t < b(n)) return;
+      const lines = wrap(str, U(500, 40), R - X);
+      lines.forEach((ln, i) => rise(ln, X, H - 110 - (lines.length - 1 - i) * 54, 40, p(n + i * 0.1, 0.35), (s) => U(500, s), DIM));
+    };
+    const p = (n, d = 0.45) => ease.outQuart(range(t, b(n), b(n) + d));
+    const bg = () => { ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H); };
+
+    bg();
+
+    // ================= S1: hook =================
+    if (t < b(S2)) {
+      const lineY = 1000;
+      // two names slam in from opposite sides, one beat apart
+      const inL = ease.outExpo(range(t, 0, 0.3)), inR = ease.outExpo(range(t, b(1), b(1) + 0.3));
+      const s1 = fitFont('LÍBANO', (s) => D(900, s), 300, R - X);
+      const kick = 1 + 0.025 * pulse;
+      ctx.save(); ctx.translate(lerp(-W, 0, inL), 0); ctx.font = D(900, s1 * kick); ctx.fillStyle = FG; ctx.fillText('LÍBANO', X, lineY - 60); ctx.restore();
+      const s2 = fitFont('ISRAEL', (s) => D(900, s), 300, R - X);
+      ctx.save(); ctx.translate(lerp(W, 0, inR), 0); ctx.font = D(900, s2 * kick); ctx.fillStyle = FG; ctx.fillText('ISRAEL', X, lineY + 60 + s2 * 0.72); ctx.restore();
+      // the line between them draws on beat 2: it becomes the border in S2
+      const ln = ease.inOutCubic(range(t, b(2), b(2) + 0.5));
+      ctx.fillStyle = ACC; ctx.fillRect(X, lineY - 5, (R - X) * ln, 10);
+      rise('Uma fronteira. Décadas de guerra.', X, 470, 68, p(1.6), (s) => D(700, s));
+      rise('Em 1 minuto.', X, 1600, 64, p(2.6), (s) => U(700, s), ACC);
+    }
+
+    // ================= S2: the Blue Line =================
+    if (t >= b(S2) && t < b(S3)) {
+      const lineY = 1000;
+      // the S1 names are sliced away; the line stays
+      const away = ease.inExpo(range(t, b(S2), b(S2) + 0.35));
+      if (away < 1) {
+        const s1 = fitFont('LÍBANO', (s) => D(900, s), 300, R - X);
+        ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, lineY - 5); ctx.clip();
+        ctx.font = D(900, s1); ctx.fillStyle = FG; ctx.fillText('LÍBANO', X, lineY - 60 - away * 400); ctx.restore();
+        const s2 = fitFont('ISRAEL', (s) => D(900, s), 300, R - X);
+        ctx.save(); ctx.beginPath(); ctx.rect(0, lineY + 5, W, H); ctx.clip();
+        ctx.font = D(900, s2); ctx.fillStyle = FG; ctx.fillText('ISRAEL', X, lineY + 60 + s2 * 0.72 + away * 400); ctx.restore();
+      }
+      // dashed blue line: dash phase marches slowly
+      ctx.fillStyle = ACC;
+      const dash = 46, gap = 18, off = ((t - b(S2)) * 30) % (dash + gap);
+      ctx.save(); ctx.beginPath(); ctx.rect(X, 0, R - X, H); ctx.clip();
+      for (let x = X - (dash + gap) + off; x < R; x += dash + gap) ctx.fillRect(x, lineY - 5, dash, 10);
+      ctx.restore();
+      rise('LÍBANO  ↑', X, lineY - 50, 80, p(S2 + 0.3), (s) => U(700, s));
+      rise('ISRAEL  ↓', X, lineY + 120, 80, p(S2 + 0.6), (s) => U(700, s));
+      // measurement bracket
+      const m = ease.outExpo(range(t, b(S2 + 3), b(S2 + 3) + 0.5));
+      if (m > 0) {
+        const y = lineY + 260, x1 = lerp((X + R) / 2, X, m), x2 = lerp((X + R) / 2, R, m);
+        ctx.fillStyle = DIM; ctx.fillRect(x1, y, x2 - x1, 4); ctx.fillRect(x1, y - 20, 4, 44); ctx.fillRect(x2 - 4, y - 20, 4, 44);
+        rise('≈ 120 km', X, y + 110, 80, p(S2 + 3.3), (s) => U(700, s), FG);
+      }
+      rise('A Linha Azul', X, 560, 150, p(S2 + 1));
+      para('Traçada pela ONU em 2000. Não é uma fronteira oficial.', X, 680, 58, b(S2 + 2), { color: DIM });
+      para('Tropas de paz da ONU (UNIFIL) estão na região desde 1978.', X, 1560, 58, b(S2 + 5.5), { color: FG });
+    }
+
+    // ================= S3: history timeline =================
+    if (t >= b(S3) - 0.5 && t < b(S4)) {
+      const push = ease.inOutCubic(range(t, b(S3) - 0.5, b(S3)));
+      ctx.save(); ctx.translate(0, (1 - push) * H);
+      bg();
+      const i = HISTORY.reduce((k, e, j) => (t >= b(e.at) ? j : k), 0);
+      const ev = HISTORY[i];
+      rise('A história', X, 260, 72, p(S3 - 0.2), (s) => U(700, s), DIM);
+      // year: digits roll individually when the year changes
+      const prev = HISTORY[Math.max(0, i - 1)].y;
+      const roll = i === 0 ? ease.outExpo(range(t, b(S3), b(S3) + 0.4)) : ease.outExpo(range(t, b(ev.at), b(ev.at) + 0.45));
+      const ys = String(ev.y), ps = i === 0 ? '    ' : String(prev);
+      const size = fitFont('2006', (s) => D(900, s), 380, R - X);
+      ctx.font = D(900, size);
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 720 - size * 0.8, W, size * 0.9); ctx.clip();
+      let x = X;
+      for (let k = 0; k < 4; k++) {
+        const ch = ys[k], pc = ps[k], adv = ctx.measureText('0').width;
+        ctx.fillStyle = FG;
+        if (ch === pc) ctx.fillText(ch, x, 720);
+        else {
+          const d = ease.outExpo(range(t, b(ev.at) + k * 0.04, b(ev.at) + k * 0.04 + 0.45));
+          ctx.fillText(ch, x, 720 + (1 - (i === 0 ? roll : d)) * size * 0.85);
+          if (pc.trim()) ctx.fillText(pc, x, 720 - (i === 0 ? roll : d) * size * 0.85);
+        }
+        x += adv;
+      }
+      ctx.restore();
+      // caption: the current event, rising line by line
+      para(ev.text, X, 880, 72, b(ev.at) + 0.1);
+      // track along the bottom, 1975 .. 2027, with marks for every date in the film
+      const tx = (yr) => lerp(X, R, (yr - 1975) / (2027 - 1975));
+      const ty = 1560;
+      const draw = ease.inOutCubic(range(t, b(S3), b(S3) + 0.6));
+      ctx.fillStyle = DIM; ctx.fillRect(X, ty - 2, (R - X) * draw, 4);
+      for (const yr of [1978, 1982, 2000, 2006, 2023, 2026]) {
+        if (draw * (R - X) < tx(yr) - X) continue;
+        const on = HISTORY.some((e) => e.y === yr && t >= b(e.at));
+        ctx.fillStyle = yr === ev.y ? ACC : on ? FG : DIM;
+        const r = yr === ev.y ? 18 + 6 * pulse : 10;
+        ctx.beginPath(); ctx.arc(tx(yr), ty, r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.font = U(500, 44); ctx.fillStyle = DIM;
+      ctx.fillText('1975', X, ty + 80);
+      const w27 = ctx.measureText('2026').width; ctx.fillText('2026', R - w27, ty + 80);
+      ctx.restore();
+    }
+
+    // ================= dated list (S4 and S6 share it) =================
+    const entries = (list, y0, gapY, size) => {
+      let y = y0;
+      list.forEach((e, k) => {
+        if (t < b(e.at)) return;
+        const live = k === list.reduce((m, f, j) => (t >= b(f.at) ? j : m), 0);
+        const bar = ease.outExpo(range(t, b(e.at), b(e.at) + 0.35));
+        ctx.fillStyle = live ? ACC : DIM;
+        ctx.fillRect(X, y - 46, 8, 46 * bar + (gapY - 60) * bar);
+        rise(e.d, X + 36, y, 50, p(e.at, 0.35), (s) => U(700, s), live ? ACC : DIM);
+        const end = para(e.text, X + 36, y + 80, size, b(e.at) + 0.12, { color: live ? FG : DIM });
+        y = Math.max(y + gapY, end + 40);
+      });
+    };
+
+    // ================= S4: 2023 - 2024 =================
+    if (t >= b(S4) - 0.5 && t < b(S5)) {
+      // accent wipe in from the right
+      const k = range(t, b(S4) - 0.5, b(S4));
+      const xw = lerp(W, -60, ease.inOutCubic(k));
+      ctx.save();
+      if (k < 1) { ctx.beginPath(); ctx.rect(xw, 0, W, H); ctx.clip(); }
+      bg();
+      rise('2023–2024', X, 300, 190, p(S4 - 0.1));
+      entries(WAR24, 540, 330, 64);
+      ctx.restore();
+      if (k > 0 && k < 1) { ctx.fillStyle = ACC; ctx.fillRect(xw - 30, 0, 60, H); }
+    }
+
+    // ================= S5: the cost of 2023-24 =================
+    if (t >= b(S5) && t < b(S6)) {
+      rise('O custo da guerra de 2023–24', X, 230, 62, p(S5 - 0.1), (s) => D(700, s), DIM);
+      COST.forEach((c, k) => {
+        if (t < b(c.at)) return;
+        const y = 520 + k * 330;
+        const v = c.n * ease.outExpo(range(t, b(c.at), b(c.at) + 0.9));
+        const txt = c.fmt(c.n >= 100 ? Math.round(v) : v);
+        const lift = ease.outQuart(range(t, b(c.at), b(c.at) + 0.35));
+        ctx.save(); ctx.beginPath(); ctx.rect(0, y - 190, W, 215); ctx.clip();
+        ctx.font = D(900, 190); ctx.fillStyle = k < 2 ? FG : FG;
+        ctx.fillText(txt, X, y + (1 - lift) * 210);
+        ctx.restore();
+        rise(c.label, X, y + 80, 52, p(c.at + 0.3, 0.35), (s) => D(700, s), k % 2 === 0 ? ACC : DIM);
+      });
+      note('Fontes: Ministério da Saúde do Líbano; autoridades israelenses (dez 2024).', S5 + 1);
+    }
+
+    // ================= S6: 2026 =================
+    if (t >= b(S6) && t < b(S7)) {
+      // year slams down on the downbeat
+      const slam = ease.outExpo(range(t, b(S6), b(S6) + 0.25));
+      const size = fitFont('2026', (s) => D(900, s), 420, R - X);
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, 560); ctx.clip();
+      ctx.font = D(900, size * (1 + 0.04 * pulse)); ctx.fillStyle = FG;
+      ctx.fillText('2026', X, lerp(-60, 520, slam));
+      ctx.restore();
+      rise('A guerra volta', X, 650, 72, p(S6 + 1), (s) => D(700, s), ACC);
+      entries(WAR26, 860, 330, 64);
+    }
+
+    // ================= S7: today =================
+    if (t >= b(S7) - 0.5 && t < b(S8)) {
+      const push = ease.inOutCubic(range(t, b(S7) - 0.5, b(S7)));
+      ctx.save(); ctx.translate(0, (1 - push) * H);
+      bg();
+      rise('Outubro de 2026', X, 300, 72, p(S7), (s) => U(700, s), DIM);
+      const v = Math.round(8954 * ease.outExpo(range(t, b(S7), b(S7) + 1.4)));
+      const size = fitFont('8.954', (s) => D(900, s), 330, R - X);
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 720 - size * 0.8, W, size * 0.9); ctx.clip();
+      ctx.font = D(900, size); ctx.fillStyle = FG;
+      ctx.fillText(v.toLocaleString('pt-BR'), X, 720 + (1 - ease.outQuart(range(t, b(S7), b(S7) + 0.35))) * size);
+      ctx.restore();
+      para('mortos no Líbano desde outubro de 2023', X, 840, 64, b(S7) + 0.4, { color: ACC });
+      if (t >= b(S7 + 4)) {
+        const lift = ease.outQuart(range(t, b(S7 + 4), b(S7 + 4) + 0.35));
+        ctx.save(); ctx.beginPath(); ctx.rect(0, 1080, W, 230); ctx.clip();
+        ctx.font = D(900, 190); ctx.fillStyle = FG;
+        ctx.fillText('+1 milhão', X, 1270 + (1 - lift) * 220);
+        ctx.restore();
+        rise('de deslocados só em 2026', X, 1370, 60, p(S7 + 4.3), (s) => D(700, s), DIM);
+      }
+      note('Fonte: Ministério da Saúde do Líbano, 11 out 2026.', S7 + 7);
+      ctx.restore();
+    }
+
+    // ================= S8: what now =================
+    if (t >= b(S8) - 0.5) {
+      const k = range(t, b(S8) - 0.5, b(S8));
+      const xw = lerp(-W, 60, ease.inOutCubic(k));
+      ctx.save();
+      if (k < 1) { ctx.beginPath(); ctx.rect(0, 0, xw + W, H); ctx.clip(); }
+      bg();
+      rise('E agora?', X, 360, 200, p(S8 - 0.1));
+      para('EUA mediam negociações entre Líbano e Israel. Na mesa:', X, 520, 56, b(S8 + 1), { color: DIM });
+      TALKS.forEach((e, j) => {
+        if (t < b(e.at)) return;
+        const y = 860 + j * 150;
+        const box = ease.outExpo(range(t, b(e.at), b(e.at) + 0.3));
+        ctx.strokeStyle = FG; ctx.lineWidth = 6;
+        ctx.strokeRect(X + 3, y - 52, 56 * box, 56 * box);
+        rise(e.text, X + 100, y, 62, p(e.at + 0.1, 0.35), (s) => D(700, s));
+      });
+      rise('Sem prazo definido.', X, 1420, 110, p(78, 0.4), (s) => D(900, s), ACC);
+      rise('O Hezbollah não participa.', X, 1520, 56, p(78.6, 0.4), (s) => D(700, s), DIM);
+      note('Fontes: AP, Al Jazeera, Biblioteca da Câmara dos Comuns (UK), Ministério da Saúde do Líbano.', S8 + 2);
+      ctx.restore();
+      if (k > 0 && k < 1) { ctx.fillStyle = ACC; ctx.fillRect(xw + W - 30, 0, 60, H); }
+    }
+  },
+});
+</script>
+</body>
+</html>

@@ -32,19 +32,32 @@ def main():
     onset_frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=hop, backtrack=True)
     onsets = librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop)
 
-    # The tracker reports the envelope peak, a few ms late, and drops edge beats.
-    # Snap each beat to a backtracked onset within 60 ms, then extend the grid to both ends.
-    if len(onsets):
+    # The tracker's phase can be off by tens of ms and drifts where there are no hits;
+    # it also drops edge beats. So: shift the grid by the median beat-to-onset offset,
+    # snap each beat to a backtracked onset within 50 ms, fit a straight line through
+    # the snapped beats, use the fit for beats with no onset, and extend it to both ends.
+    if len(onsets) and len(beats) > 1:
+        period = float(np.median(np.diff(beats)))
+        offs = [onsets[np.argmin(np.abs(onsets - b))] - b for b in beats]
+        offs = [o for o in offs if abs(o) < period / 4]
+        if offs:
+            beats = beats + float(np.median(offs))
+        snapped = np.zeros(len(beats), bool)
         for i, b in enumerate(beats):
             j = int(np.argmin(np.abs(onsets - b)))
-            if abs(onsets[j] - b) < 0.06:
+            if abs(onsets[j] - b) < 0.05:
                 beats[i] = onsets[j]
-    if len(beats) > 1:
-        period = float(np.median(np.diff(beats)))
-        dur = len(y) / sr
-        head = [beats[0] - period * k for k in range(1, 64) if beats[0] - period * k > -0.03]
-        tail = [beats[-1] + period * k for k in range(1, 64) if beats[-1] + period * k < dur - 0.05]
-        beats = np.concatenate([np.maximum(0, head[::-1]), beats, tail])
+                snapped[i] = True
+        idx = np.arange(len(beats))
+        if snapped.sum() >= 4:
+            k, a = np.polyfit(idx[snapped], beats[snapped], 1)
+            fit = a + k * idx
+            beats = np.where(snapped & (np.abs(beats - fit) < 0.05), beats, fit)
+            dur = len(y) / sr
+            head = [a + k * i for i in range(-1, -64, -1) if a + k * i > -k * 0.25]
+            tail = [a + k * i for i in range(len(beats), len(beats) + 64) if a + k * i < dur - 0.05]
+            beats = np.concatenate([np.maximum(0, head[::-1]), beats, tail])
+            tempo = 60.0 / k
     frames = librosa.time_to_frames(beats, sr=sr, hop_length=hop)
 
     # Downbeats: harmony tends to change on the one. Pick the 4-beat phase with the
