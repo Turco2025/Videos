@@ -1,0 +1,6 @@
+node_modules/
+out/
+films/*/music.wav
+films/*/mix_raw.wav
+__pycache__/
+films/*/audio.wav

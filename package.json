@@ -1,0 +1,24 @@
+{
+  "name": "motion-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Code-driven motion studio: every film is a pure function of time.",
+  "type": "module",
+  "scripts": {
+    "audio": "node tools/audio.mjs",
+    "contact": "node render.mjs --contact",
+    "verify": "node render.mjs --verify",
+    "render": "node render.mjs",
+    "preview": "node tools/serve.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Turco2025/Videos.git"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@fontsource/archivo": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "playwright": "^1.56.1"
+  }
+}

@@ -1,0 +1,242 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>example: motion studio</title>
+<style>
+  @font-face { font-family: Display; font-weight: 900; src: url(/node_modules/@fontsource/archivo/files/archivo-latin-900-normal.woff2) format('woff2'); }
+  @font-face { font-family: Display; font-weight: 700; src: url(/node_modules/@fontsource/archivo/files/archivo-latin-700-normal.woff2) format('woff2'); }
+  @font-face { font-family: UI; font-weight: 500; src: url(/node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2) format('woff2'); }
+  @font-face { font-family: UI; font-weight: 700; src: url(/node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-700-normal.woff2) format('woff2'); }
+  html, body { margin: 0; background: #000; }
+  canvas { display: block; }
+  body.preview { display: grid; place-items: center; height: 100vh; gap: 8px; align-content: center; }
+  .scrub { width: 60vw; }
+</style>
+</head>
+<body>
+<script type="module">
+import { mount, loadFonts, range, ease, lerp, rand, noise, spring, clamp } from '/lib/studio.js';
+
+// Palette: bone paper, ink, one accent.
+const PAPER = '#ECE8DF', INK = '#111110', ACC = '#FF4A1C';
+const DISPLAY = (w, px) => `${w} ${px}px Display`;
+const UI = (w, px) => `${w} ${px}px UI`;
+
+// Scene starts in beats (keep in sync with score.mjs CUTS).
+const S2 = 4, S3 = 10, S4 = 16, S5 = 23;
+const CMD = '$ node render.mjs films/example';
+
+mount({
+  width: 1080, height: 1920, fps: 30, duration: 16,
+
+  async setup() {
+    await loadFonts([DISPLAY(900, 100), DISPLAY(700, 100), UI(500, 40), UI(700, 40)]);
+  },
+
+  draw(env, t) {
+    const { ctx, beats, W, H } = env;
+    const b = (n) => beats.at(n);
+    const B = 60 / beats.tempo;
+    const pulse = beats.pulse(t, 0.12);
+
+    ctx.fillStyle = PAPER;
+    ctx.fillRect(0, 0, W, H);
+
+    // ---------- helpers ----------
+    // Text that rises out of a hard mask (never a fade).
+    const rise = (str, x, y, size, p, font = DISPLAY(900, size), color = INK) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, y - size * 0.98, W, size * 1.2);
+      ctx.clip();
+      ctx.font = font;
+      // never let type run off the frame: shrink to fit the safe width
+      const w = ctx.measureText(str).width, room = W - x - 70;
+      if (w > room) { ctx.translate(x, y); ctx.scale(room / w, room / w); ctx.translate(-x, -y); }
+      ctx.fillStyle = color;
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(str, x, y + (1 - p) * size * 1.15);
+      ctx.restore();
+    };
+    const mono = (str, x, y, size, color = INK, w = 500) => {
+      ctx.font = UI(w, size); ctx.fillStyle = color; ctx.textBaseline = 'alphabetic'; ctx.fillText(str, x, y);
+    };
+
+    // ================= S1: hook (0 .. S2) =================
+    if (t < b(S2)) {
+      // An accent slab slams up on frame 0 and retracts on beat 1, uncovering f(t).
+      // An accent slice tears up through the frame on frame 0 and is gone by beat 1.
+      const sweep = ease.inOutCubic(range(t, 0, b(1) - 0.05));
+      const slabTop = lerp(H * 0.35, -H * 0.7, sweep);
+      // f(t) punches in from oversized and settles on a spring, then kicks on each beat.
+      const sc = lerp(1.7, 1, spring(t, { freq: 1.6, damping: 0.55 })) * (1 + 0.035 * pulse);
+      ctx.save();
+      ctx.translate(60, 1180);
+      ctx.scale(sc, sc);
+      ctx.font = DISPLAY(900, 640);
+      ctx.fillStyle = INK;
+      ctx.fillText('f(t)', -20, 0);
+      ctx.restore();
+      // live t readout ticks every beat
+      const n = clamp(beats.index(t), 0, 3);
+      const tv = (n * B).toFixed(2);
+      mono('t =', 80, 1420, 92, INK, 500);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(280, 1320, 700, 130); ctx.clip();
+      const tick = t < b(1) ? 1 : ease.outCubic(range(beats.since(t), 0, 0.14));
+      mono(tv, 290, 1420 + (1 - tick) * 120, 92, ACC, 700);
+      ctx.restore();
+      rise('paints frame t.', 80, 1640, 92, ease.outQuart(range(t, b(2), b(2) + 0.35)), DISPLAY(700, 92));
+      ctx.fillStyle = ACC;
+      ctx.fillRect(0, slabTop, W, H * 0.45);
+    }
+
+    // ================= S2: frames on a strip (S2 .. S3) =================
+    if (t >= b(S2) - 0.42 && t < b(S3)) {
+      const k = ease.outExpo(range(t, b(S2) - 0.42, b(S2)));
+      ctx.save();
+      ctx.translate(0, (1 - k) * H);
+      ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+      rise('One frame.', 70, 360, 150, ease.outQuart(range(t, b(S2), b(S2) + 0.4)));
+      rise('One function.', 70, 520, 150, ease.outQuart(range(t, b(S2 + 1), b(S2 + 1) + 0.4)));
+      // film strip: cells scroll left; one flips to accent per beat
+      const cell = 220, gap = 18, y0 = 820;
+      const scroll = (t - b(S2)) * 260;
+      const n0 = Math.floor(scroll / (cell + gap)) - 1;
+      for (let i = n0; i < n0 + 7; i++) {
+        const x = 70 + i * (cell + gap) - scroll;
+        const lit = i >= 2 && b(S2 + i - 1) <= t;
+        ctx.fillStyle = lit ? ACC : INK;
+        ctx.fillRect(x, y0, cell, cell * 1.6);
+        ctx.font = UI(700, 40);
+        ctx.fillStyle = lit ? INK : PAPER;
+        ctx.fillText(String(i * 15).padStart(4, '0'), x + 22, y0 + 64);
+      }
+      // playhead
+      const px = 70 + 2.5 * (cell + gap);
+      ctx.fillStyle = INK; ctx.fillRect(px - 3, y0 - 70, 6, cell * 1.6 + 140);
+      ctx.beginPath(); ctx.moveTo(px - 26, y0 - 70); ctx.lineTo(px + 26, y0 - 70); ctx.lineTo(px, y0 - 30); ctx.fill();
+      // code line types in by beat
+      const code = 'window.seek(t)';
+      const chars = Math.floor(clamp((t - b(S2 + 2)) / (B / 4), 0, code.length));
+      mono(code.slice(0, chars), 70, 1460, 84, INK, 700);
+      if (chars < code.length && t > b(S2 + 2)) { ctx.fillStyle = ACC; ctx.fillRect(70 + chars * 50.5, 1388, 46, 90); }
+      rise('no state between frames', 70, 1600, 56, ease.outQuart(range(t, b(S2 + 4), b(S2 + 4) + 0.3)), UI(500, 56), INK);
+      ctx.restore();
+      // accent wipe across into S3
+      wipe(ctx, t, b(S3), W, H, 'bar');
+    }
+
+    // ================= S3: seeded grid (S3 .. S4) =================
+    if (t >= b(S3) && t < b(S4)) {
+      const bi = beats.index(t);
+      const cols = 6, rows = 6, size = 150, gx = 75, gy = 640, g = 20;
+
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const v = rand(bi, i);
+        const prev = rand(bi - 1, i);
+        const flip = ease.outCubic(range(beats.since(t), 0, 0.16));
+        const x = gx + c * (size + g), y0 = gy + r * (size + g);
+        // collapse: squares drop into bars at the bottom (hands off to S4)
+        const drop = ease.inExpo(range(t, b(S4) - 0.45 + c * 0.03, b(S4) + c * 0.03));
+        const y = y0 + drop * (H - gy + 200);
+        const h = size;
+        const val = flip < 1 ? (flip > 0.5 ? v : prev) : v;
+        ctx.fillStyle = val > 0.82 ? ACC : val > 0.45 ? INK : 'rgba(17,17,16,0.08)';
+        const s = 1 - 0.18 * Math.sin(Math.PI * flip);
+        ctx.fillRect(x + (size * (1 - s)) / 2, y + (h * (1 - s)) / 2, size * s, h * s);
+      }
+      ctx.save();
+      // headline is sliced away upward by a hard mask on the cut (no fades)
+      const out = ease.inExpo(range(t, b(S4) - 0.3, b(S4)));
+      ctx.beginPath(); ctx.rect(0, 0, W, 560 * (1 - out)); ctx.clip();
+      rise('Math.random', 70, 330, 140, ease.outQuart(range(t, b(S3), b(S3) + 0.35)));
+      // strike on beat S3+2
+      const strike = ease.outExpo(range(t, b(S3 + 2), b(S3 + 2) + 0.3));
+      ctx.font = DISPLAY(900, 140);
+      const sw = ctx.measureText('Math.random').width;
+      ctx.fillStyle = ACC; ctx.fillRect(60, 268, (sw + 30) * strike, 26);
+      rise('mulberry32(seed)', 74, 500, 84, ease.outQuart(range(t, b(S3 + 3), b(S3 + 3) + 0.3)), UI(700, 84), INK);
+      mono(`seed = ${Math.max(0, bi)}`, 75, 1760, 56, INK);
+      ctx.restore();
+    }
+
+    // ================= S4: on the beat (S4 .. S5) =================
+    if (t >= b(S4) && t < b(S5)) {
+      const n = 24, bw = 36, gap = (W - 150 - n * bw) / (n - 1);
+      const enter = ease.outExpo(range(t, b(S4), b(S4) + 0.3));
+      for (let i = 0; i < n; i++) {
+        const lvl = 0.25 + 0.45 * (0.5 + 0.5 * noise(7 + i, t * 3.2)) + 0.5 * pulse * (1 - Math.abs(i - n / 2) / (n / 2));
+        const h = lerp(0, 60 + lvl * 380, enter);
+        ctx.fillStyle = i % 6 === beats.index(t) % 6 ? ACC : INK;
+        ctx.fillRect(75 + i * (bw + gap), H - 270 - h, bw, h);
+      }
+      rise('On the', 70, 330, 170, ease.outQuart(range(t, b(S4), b(S4) + 0.35)));
+      rise('beat.', 70, 510, 170, ease.outQuart(range(t, b(S4 + 1), b(S4 + 1) + 0.35)), DISPLAY(900, 170), ACC);
+      // giant beat counter, rolls each beat
+      const bi = beats.index(t);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 580, W, 520); ctx.clip();
+      const roll = ease.outExpo(range(beats.since(t), 0, 0.2));
+      ctx.font = DISPLAY(900, 480);
+      ctx.fillStyle = INK;
+      ctx.fillText(String(bi + 1).padStart(2, '0'), 50, 1060 + (1 - roll) * 520);
+      ctx.fillText(String(bi).padStart(2, '0'), 50, 1060 - roll * 520);
+      ctx.restore();
+      mono(`beats.json  ${beats.tempo.toFixed(1)} bpm`, 75, H - 170, 56, INK);
+      // ink flood from the bottom into S5
+      const flood = ease.inExpo(range(t, b(S5) - 0.45, b(S5)));
+      ctx.fillStyle = INK; ctx.fillRect(0, H * (1 - flood), W, H * flood);
+    }
+
+    // ================= S5: endcard (S5 .. end) =================
+    if (t >= b(S5)) {
+      ctx.fillStyle = INK; ctx.fillRect(0, 0, W, H);
+      ctx.font = DISPLAY(900, 100);
+      const fitPx = Math.floor(100 * (W - 140) / Math.max(ctx.measureText('MOTION').width, ctx.measureText('STUDIO').width));
+      const word = (str, y, start) => {
+        let x = 70;
+        for (let i = 0; i < str.length; i++) {
+          const p = ease.outQuart(range(t, start + i * B / 8, start + i * B / 8 + 0.4));
+          ctx.save(); ctx.beginPath(); ctx.rect(0, y - fitPx, W, fitPx * 1.2); ctx.clip();
+          ctx.fillStyle = PAPER; ctx.font = DISPLAY(900, fitPx);
+          ctx.fillText(str[i], x, y + (1 - p) * fitPx * 1.15);
+          ctx.restore();
+          ctx.font = DISPLAY(900, fitPx);
+          x += ctx.measureText(str[i]).width;
+        }
+        return x;
+      };
+      word('MOTION', 820, b(S5));
+      const end = word('STUDIO', 820 + fitPx * 0.95, b(S5 + 1));
+      // underline wipes on the downbeat at 28
+      const u = ease.outExpo(range(t, b(28), b(28) + 0.35));
+      ctx.fillStyle = ACC; ctx.fillRect(70, 820 + fitPx * 0.95 + 50, (end - 70) * u, 34);
+      // command types at 32nds from beat 25
+      const chars = Math.floor(clamp((t - b(25)) / (B / 8), 0, CMD.length));
+      mono(CMD.slice(0, chars), 74, 1420, 50, PAPER, 500);
+      const blink = chars === CMD.length ? (Math.floor((t - b(25)) / B) % 2 === 0) : true;
+      if (t > b(25) && blink) { ctx.fillStyle = ACC; ctx.fillRect(74 + chars * 30.1, 1378, 26, 54); }
+      rise('a pure function of time.', 74, 1720, 64, ease.outQuart(range(t, b(29), b(29) + 0.35)), DISPLAY(700, 64), PAPER);
+    }
+  },
+});
+
+// Hard-edged transitions; `at` is the cut time.
+function wipe(ctx, t, at, W, H, kind) {
+  if (kind === 'bar') {
+    const k = range(t, at - 0.42, at + 0.08);
+    if (k <= 0 || k >= 1) return;
+    const x = lerp(-W * 1.2, W * 1.2, ease.inOutCubic(k));
+    ctx.fillStyle = ACC;
+    ctx.save(); ctx.translate(x, 0); ctx.transform(1, 0, -0.25, 1, 0, 0);
+    ctx.fillRect(0, 0, W * 1.1, H); ctx.restore();
+    ctx.fillStyle = PAPER;
+    if (k > 0.5) { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, Math.max(0, x - 120), H); ctx.clip(); ctx.fillRect(0, 0, W, H); ctx.restore(); }
+  }
+}
+</script>
+</body>
+</html>
