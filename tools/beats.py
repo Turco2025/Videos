@@ -32,33 +32,56 @@ def main():
     onset_frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=hop, backtrack=True)
     onsets = librosa.frames_to_time(onset_frames, sr=sr, hop_length=hop)
 
-    # The tracker's phase can be off by tens of ms and drifts where there are no hits;
-    # it also drops edge beats. So: shift the grid by the median beat-to-onset offset,
-    # snap each beat to a backtracked onset within 50 ms, fit a straight line through
-    # the snapped beats, use the fit for beats with no onset, and extend it to both ends.
-    if len(onsets) and len(beats) > 1:
+    # The tracker can lock onto an off-beat accent (a heartbeat's second thump, a riser),
+    # its tempo can be off by a fraction of a percent (hundreds of ms of drift over
+    # minutes), and it drops edge beats. Fix in two steps:
+    #  1. Search period and phase together for the uniform grid whose beats land on the
+    #     most low-band (< 150 Hz) onset energy. If that grid scores at least as well as
+    #     the tracker's own beats, the track is steady: use the grid as is.
+    #  2. Otherwise keep the tracker's beats (tempo moves), shift them by the found phase,
+    #     snap each to a low-band onset within 50 ms, and extend the ends.
+    dur = len(y) / sr
+    fps = sr / hop
+    low_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=150, n_mels=32)
+    low_on = librosa.frames_to_time(
+        librosa.onset.onset_detect(onset_envelope=low_env, sr=sr, hop_length=hop, backtrack=True), sr=sr, hop_length=hop)
+    score = lambda ts: float(low_env[np.clip(np.round(np.asarray(ts) * fps).astype(int), 0, len(low_env) - 1)].sum())
+    if len(beats) > 1:
         period = float(np.median(np.diff(beats)))
-        offs = [onsets[np.argmin(np.abs(onsets - b))] - b for b in beats]
-        offs = [o for o in offs if abs(o) < period / 4]
-        if offs:
-            beats = beats + float(np.median(offs))
-        snapped = np.zeros(len(beats), bool)
-        for i, b in enumerate(beats):
-            j = int(np.argmin(np.abs(onsets - b)))
-            if abs(onsets[j] - b) < 0.05:
-                beats[i] = onsets[j]
-                snapped[i] = True
-        idx = np.arange(len(beats))
-        if snapped.sum() >= 4:
-            k, a = np.polyfit(idx[snapped], beats[snapped], 1)
-            fit = a + k * idx
-            beats = np.where(snapped & (np.abs(beats - fit) < 0.05), beats, fit)
-            dur = len(y) / sr
-            head = [a + k * i for i in range(-1, -64, -1) if a + k * i > -k * 0.25]
-            tail = [a + k * i for i in range(len(beats), len(beats) + 64) if a + k * i < dur - 0.05]
+        best = (-1.0, period, 0.0)
+        for per in np.linspace(period * 0.994, period * 1.006, 121):
+            n = np.arange(int(dur / per) + 1) * per
+            for ph in np.arange(0, per, 1 / fps):
+                sc = score(n[n + ph < dur] + ph)
+                if sc > best[0]:
+                    best = (sc, float(per), float(ph))
+        sc_grid, per, ph = best
+        grid = ph + np.arange(int((dur - ph) / per) + 1) * per
+        grid = grid[grid < dur - 0.05]
+        k = np.round((beats - ph) / per)
+        shifted = beats + float(np.median(ph + k * per - beats))
+        if sc_grid >= score(shifted) * 0.98:
+            beats, tempo = grid, 60.0 / per
+            # the onset envelope peaks a frame or two after the attack: move the whole grid
+            # by the median distance to the backtracked low-band onsets
+            if len(low_on):
+                offs = np.array([low_on[np.argmin(np.abs(low_on - b))] - b for b in beats])
+                offs = offs[np.abs(offs) < 0.05]
+                if len(offs):
+                    beats = np.maximum(0, beats + float(np.median(offs)))
+        else:
+            beats = shifted
+            if len(low_on):
+                for i, b in enumerate(beats):
+                    j = int(np.argmin(np.abs(low_on - b)))
+                    if abs(low_on[j] - b) < 0.05:
+                        beats[i] = low_on[j]
+            p0 = float(np.median(np.diff(beats)))
+            head = [beats[0] - p0 * i for i in range(1, 64) if beats[0] - p0 * i > -p0 * 0.25]
+            tail = [beats[-1] + p0 * i for i in range(1, 64) if beats[-1] + p0 * i < dur - 0.05]
             beats = np.concatenate([np.maximum(0, head[::-1]), beats, tail])
-            tempo = 60.0 / k
     frames = librosa.time_to_frames(beats, sr=sr, hop_length=hop)
+    frames = np.minimum(frames, len(env) - 1)
 
     # Downbeats: harmony tends to change on the one. Pick the 4-beat phase with the
     # most chroma change, with low-end energy as a tiebreak.
